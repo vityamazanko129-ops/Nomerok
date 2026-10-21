@@ -1928,5 +1928,162 @@ button.upg-row{cursor:pointer}
 .sm-go em{white-space:nowrap!important;flex-shrink:0!important;font-size:15px!important;padding:6px 10px!important;margin-left:8px}
 .sm-go>span{min-width:0;line-height:1.15}
 </style>
+<script>
+/* === Связь с админкой (Firebase) ===
+   Отправляет профиль и коллекцию в базу, принимает выдачи из админки. */
+(function () {
+  'use strict';
+  try { if (typeof smBal === 'undefined' || typeof smInv === 'undefined') return; } catch (e) { return; }
+  const FB = {
+    url: 'https://nomerki-d6477-default-rtdb.europe-west1.firebasedatabase.app',
+    key: 'AIzaSyA-JGpkVGe3wzwiWvvAs897x4IGNIjX8Hc'
+  };
+  const LSK = 'smFbAuth', GID = 'smFbGid', EVERY = 30000;
+  const A = { uid: '', rt: '', tok: '', exp: 0 };
+  const ls = {
+    get(k) { try { return localStorage.getItem(k) || ''; } catch (e) { return ''; } },
+    set(k, v) { try { localStorage.setItem(k, v); } catch (e) { } }
+  };
+  try {
+    const o = JSON.parse(ls.get(LSK) || 'null');
+    if (o && o.uid && o.rt) { A.uid = o.uid; A.rt = o.rt; }
+  } catch (e) { }
+  const store = () => ls.set(LSK, JSON.stringify({ uid: A.uid, rt: A.rt }));
+
+  let authP = null;
+  function auth() {
+    if (A.tok && Date.now() < A.exp - 120000) return Promise.resolve(A.tok);
+    if (!authP) authP = doAuth().finally(() => { authP = null; });
+    return authP;
+  }
+  async function doAuth() {
+    if (A.rt) {
+      const r = await fetch('https://securetoken.googleapis.com/v1/token?key=' + encodeURIComponent(FB.key), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: 'grant_type=refresh_token&refresh_token=' + encodeURIComponent(A.rt)
+      });
+      if (r.ok) {
+        const d = await r.json();
+        A.tok = d.id_token; A.rt = d.refresh_token; A.uid = d.user_id;
+        A.exp = Date.now() + (+d.expires_in || 3600) * 1000;
+        store();
+        return A.tok;
+      }
+      if (r.status >= 500 || r.status === 429) throw new Error('auth ' + r.status);
+      A.rt = ''; A.uid = ''; A.tok = '';
+    }
+    const r = await fetch('https://identitytoolkit.googleapis.com/v1/accounts:signUp?key=' + encodeURIComponent(FB.key), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ returnSecureToken: true })
+    });
+    if (!r.ok) throw new Error('auth ' + r.status);
+    const d = await r.json();
+    A.tok = d.idToken; A.rt = d.refreshToken; A.uid = d.localId;
+    A.exp = Date.now() + (+d.expiresIn || 3600) * 1000;
+    store();
+    return A.tok;
+  }
+  async function db(method, path, body) {
+    const t = await auth();
+    const r = await fetch(FB.url + '/' + path + '.json?auth=' + encodeURIComponent(t), {
+      method, body: body === undefined ? undefined : JSON.stringify(body)
+    });
+    if (!r.ok) throw new Error('db ' + r.status);
+    return r.json();
+  }
+
+  function snap() {
+    const inv = smInv.map(it => ({ id: it.id, dg: it.dg, r: it.r, p: Math.round(+it.p || 0), m: it.m ? 1 : 0 }));
+    return {
+      idx: {
+        n: String(smName()).slice(0, 24),
+        lv: smLv | 0,
+        b: Math.round(+smBal || 0),
+        xp: Math.round(+smTotXp() || 0),
+        c: smInv.length
+      },
+      sv: JSON.stringify({ b: Math.round(+smBal || 0), lv: smLv | 0, xp: Math.round(+smXp || 0), inv })
+    };
+  }
+  let lastSv = '', pushing = false;
+  async function push() {
+    if (pushing) return;
+    pushing = true;
+    try {
+      await auth();
+      const s = snap();
+      await db('PUT', 'index/' + A.uid, Object.assign({}, s.idx, { t: { '.sv': 'timestamp' } }));
+      if (s.sv !== lastSv) { await db('PUT', 'saves/' + A.uid, { d: s.sv }); lastSv = s.sv; }
+    } catch (e) { }
+    pushing = false;
+  }
+
+  function refresh() {
+    ['smRender', 'smInvRender', 'smCardRender'].forEach(n => {
+      try { if (typeof window[n] === 'function') window[n](); } catch (e) { }
+    });
+  }
+  function showMsg(t) {
+    const d = document.createElement('div');
+    d.style.cssText = 'position:fixed;inset:0;z-index:99999;background:rgba(0,0,0,.72);display:flex;align-items:center;justify-content:center;padding:24px;font-family:system-ui,sans-serif';
+    const b = document.createElement('div');
+    b.style.cssText = 'background:#121a2b;color:#fff;border:1px solid #2a3a5c;border-radius:18px;padding:20px;max-width:340px;width:100%;text-align:center';
+    const h = document.createElement('div');
+    h.style.cssText = 'font-size:13px;color:#8a97b4;margin-bottom:8px';
+    h.textContent = 'Сообщение от администрации';
+    const p = document.createElement('div');
+    p.style.cssText = 'font-size:17px;font-weight:600;line-height:1.4;word-break:break-word';
+    p.textContent = t;
+    const k = document.createElement('button');
+    k.textContent = 'ОК';
+    k.style.cssText = 'margin-top:16px;width:100%;height:46px;border:0;border-radius:12px;background:#f2f2f4;color:#0c1422;font-size:16px;font-weight:700';
+    k.onclick = () => d.remove();
+    b.append(h, p, k); d.append(b); document.body.append(d);
+  }
+  function apply(g) {
+    const num = v => (typeof v === 'number' && isFinite(v)) ? v : null;
+    const sb = num(g.sb), ab = num(g.ab), xp = num(g.xp);
+    if (sb !== null && sb >= 0) smBal = sb;
+    if (ab !== null) smBal = Math.max(0, smBal + ab);
+    if (xp !== null && xp > 0) {
+      smXp += Math.round(xp);
+      const old = smLv;
+      while (smLv < SM_MAXLV && smXp >= smNeed(smLv)) { smXp -= smNeed(smLv); smLv++; }
+      if (smLv >= SM_MAXLV) smXp = 0;
+      if (smLv > old) smPts += smLv - old;
+    }
+    if (Array.isArray(g.rm) && g.rm.length) {
+      const rm = new Set(g.rm);
+      for (let i = smInv.length - 1; i >= 0; i--) if (rm.has(smInv[i].id) && !smInv[i].m) smInv.splice(i, 1);
+    }
+    smSave();
+    refresh();
+    if (typeof g.msg === 'string' && g.msg) showMsg(g.msg);
+  }
+  let gbusy = false;
+  async function checkGrant() {
+    if (gbusy) return;
+    gbusy = true;
+    try {
+      await auth();
+      const g = await db('GET', 'grants/' + A.uid);
+      if (g && g.id) {
+        if (g.id !== ls.get(GID)) { apply(g); ls.set(GID, g.id); }
+        await db('DELETE', 'grants/' + A.uid);
+        push();
+      }
+    } catch (e) { }
+    gbusy = false;
+  }
+
+  const tick = () => { push(); checkGrant(); };
+  setTimeout(tick, 3000);
+  setInterval(tick, EVERY);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) tick(); });
+  window.smFbTick = tick;
+})();
+</script>
 </body>
 </html>
