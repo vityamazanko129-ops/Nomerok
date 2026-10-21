@@ -2084,6 +2084,134 @@ button.upg-row{cursor:pointer}
   document.addEventListener('visibilitychange', () => { if (!document.hidden) tick(); });
   window.smFbTick = tick;
 })();
+  window.smFbTick = tick;
+})();
+</script>
+
+<!-- ===== РЕЙТИНГ: загрузка из Firebase и отрисовка ===== -->
+<script>
+(function () {
+  'use strict';
+  const DB_URL = 'https://nomerki-d6477-default-rtdb.europe-west1.firebasedatabase.app';
+  const API_KEY = 'AIzaSyA-JGpkVGe3wzwiWvvAs897x4IGNIjX8Hc';
+  const LSK = 'smFbAuth';
+
+  let authState = { rt: '', tok: '', exp: 0 };
+  try {
+    const o = JSON.parse(localStorage.getItem(LSK) || 'null');
+    if (o && o.rt) authState.rt = o.rt;
+  } catch (e) {}
+
+  async function getToken() {
+    if (authState.tok && Date.now() < authState.exp - 60000) return authState.tok;
+    if (!authState.rt) {
+      const r = await fetch('https://identitytoolkit.googleapis.com/v1/accounts:signUp?key=' + encodeURIComponent(API_KEY), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ returnSecureToken: true })
+      });
+      if (!r.ok) throw new Error('auth ' + r.status);
+      const d = await r.json();
+      authState.tok = d.idToken;
+      authState.rt = d.refreshToken;
+      authState.exp = Date.now() + (+d.expiresIn || 3600) * 1000;
+      try { localStorage.setItem(LSK, JSON.stringify({ uid: d.localId, rt: d.refreshToken })); } catch(e){}
+      return authState.tok;
+    }
+    const r = await fetch('https://securetoken.googleapis.com/v1/token?key=' + encodeURIComponent(API_KEY), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: 'grant_type=refresh_token&refresh_token=' + encodeURIComponent(authState.rt)
+    });
+    if (!r.ok) throw new Error('token ' + r.status);
+    const d = await r.json();
+    authState.tok = d.id_token;
+    authState.rt = d.refresh_token;
+    authState.exp = Date.now() + (+d.expires_in || 3600) * 1000;
+    try { localStorage.setItem(LSK, JSON.stringify({ uid: d.user_id, rt: d.refresh_token })); } catch(e){}
+    return authState.tok;
+  }
+
+  async function loadRating() {
+    const token = await getToken();
+    const url = DB_URL.replace(/\/+$/, '') + '/index.json?orderBy="b"&limitToLast=20&auth=' + encodeURIComponent(token);
+    const r = await fetch(url);
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const data = await r.json();
+    return Object.entries(data || {})
+      .map(([id, p]) => ({ id, ...p }))
+      .sort((a, b) => (b.b || 0) - (a.b || 0));
+  }
+
+  function myUid() {
+    try {
+      const o = JSON.parse(localStorage.getItem(LSK) || 'null');
+      return o && o.uid ? o.uid : '';
+    } catch (e) { return ''; }
+  }
+
+  function fmt(n) { return Math.round(+n || 0).toLocaleString('ru-RU'); }
+
+  async function renderRate() {
+    const box = document.getElementById('smRateBody');
+    if (!box) return;
+    box.innerHTML = '<div style="text-align:center;color:#7f8fb0;padding:20px;font-size:15px">Загрузка…</div>';
+    try {
+      const players = await loadRating();
+      if (!players.length) {
+        box.innerHTML = '<div style="text-align:center;color:#7f8fb0;padding:40px;font-size:15px">Пока никого нет</div>';
+        return;
+      }
+      const uid = myUid();
+      const meIdx = players.findIndex(p => p.id === uid);
+      let html = '';
+      const esc = s => String(s).replace(/[<>&]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]));
+
+      if (meIdx >= 0) {
+        const me = players[meIdx];
+        html += `<div class="rt-me">Ваше место: <b>#${meIdx + 1}</b> · ${esc(me.n || 'Игрок')} · ${fmt(me.b)} ₽</div>`;
+      }
+
+      const medals = ['🥇','🥈','🥉'];
+      players.slice(0, 3).forEach((p, i) => {
+        const isMe = p.id === uid;
+        html += `<div class="rt-row${isMe ? ' me' : ''}">
+          <div class="n m${i + 1}">${medals[i]}</div>
+          <div class="nm">${esc(p.n || 'Игрок')}<span class="lv">Ур. ${p.lv || 1}</span></div>
+          <div class="sc">${fmt(p.b)} ₽</div>
+        </div>`;
+      });
+
+      if (players.length > 3) {
+        html += '<div class="rt-gap">• • •</div>';
+        players.slice(3).forEach((p, i) => {
+          const isMe = p.id === uid;
+          html += `<div class="rt-row${isMe ? ' me' : ''}">
+            <div class="n">${i + 4}</div>
+            <div class="nm">${esc(p.n || 'Игрок')}<span class="lv">Ур. ${p.lv || 1}</span></div>
+            <div class="sc">${fmt(p.b)} ₽</div>
+          </div>`;
+        });
+      }
+      box.innerHTML = html;
+    } catch (e) {
+      box.innerHTML = '<div style="text-align:center;color:#ff7a8f;padding:40px;font-size:15px">Не удалось загрузить рейтинг</div>';
+    }
+  }
+
+  const origOpen = window.smOpen;
+  if (typeof origOpen === 'function') {
+    window.smOpen = function (id) {
+      origOpen.apply(this, arguments);
+      if (id === 'smOvRate') renderRate();
+    };
+  }
+  window.renderRate = renderRate;
+
+  setTimeout(() => {
+    if (document.getElementById('smOvRate')?.classList.contains('on')) renderRate();
+  }, 2000);
+})();
 </script>
 </body>
 </html>
