@@ -1580,7 +1580,7 @@ button.upg-row{cursor:pointer}
                     <button class="gm-t on" id="gmT_cr" onclick="gmTab('cr')"><b>Краш</b><small>забери до взрыва</small></button>
                     <button class="gm-t" id="gmT_up" onclick="gmTab('up')"><b>Апгрейдер</b><small>номера → дороже</small></button>
                     <button class="gm-t" id="gmT_bj" onclick="gmTab('bj')"><b>Блэкджек</b><small>против дилера</small></button>
-                    <button class="gm-t" id="gmT_dc" onclick="gmTab('dc')"><b>Кубики</b><small>1 на 1 с ботом</small></button>
+                    <button class="gm-t" id="gmT_dc" onclick="gmTab('dc')"><b>Кубики</b><small>1 на 1 онлайн</small></button>
                 </div>
                 <div class="gm-desc" id="gmDesc"></div>
                 <!-- краш -->
@@ -2389,6 +2389,7 @@ button.upg-row{cursor:pointer}
   }
   function finish(win) {
     const b = M.bet, prize = Math.floor(b * 2 * (1 - DC_FEE));
+    window.smDcOpp = (M.opp && M.opp.n) || '';
     M = null; sv();
     clearInterval(dc.tmr); dc.tmr = 0; dc.win = win ? 0 : 1; dc.busy = false; dc.act = [];
     if (win) {
@@ -2487,6 +2488,119 @@ button.upg-row{cursor:pointer}
   build();
   setInterval(lobby, 2500);
   if (M) startLoop();
+})();
+</script>
+<script>
+/* === Лента игр: кто выиграл / проиграл и какая ставка (Firebase: feed) ===
+   Запись живёт 30 секунд, потом скрывается и удаляется из базы. */
+(function () {
+  'use strict';
+  try { if (typeof smLog !== 'function' || typeof smFmt !== 'function' || !window.smFbAuth) return; } catch (e) { return; }
+  const CFG = window.smFbCfg, LIFE = 30000;
+  const $ = id => document.getElementById(id);
+  const NAMES = { crash: 'Краш', upg: 'Апгрейдер', bj: 'Блэкджек', dc: 'Кубики' };
+  const nm = () => { try { return String(smName() || 'Игрок').slice(0, 20); } catch (e) { return 'Игрок'; } };
+  const num = v => { v = Math.floor(+v); return isFinite(v) && v > 0 ? v : 0; };
+
+  async function api(m, path, q, b) {
+    try {
+      const t = await window.smFbAuth();
+      const r = await fetch(CFG.url + '/' + path + '.json?' + (q ? q + '&' : '') + 'auth=' + encodeURIComponent(t), { method: m, body: b === undefined ? undefined : JSON.stringify(b) });
+      let j = null; try { j = await r.json(); } catch (e) { }
+      return { ok: r.ok, s: r.status, json: j };
+    } catch (e) { return { ok: false, s: 0, json: null }; }
+  }
+
+  /* ---------- отправка результата ---------- */
+  function post(e) {
+    e.n = nm(); e.t = Date.now();
+    api('POST', 'feed', '', e).then(() => setTimeout(refresh, 700));
+  }
+  const _log = window.smLog;
+  window.smLog = function (k, o) {
+    const r = _log.apply(this, arguments);
+    try {
+      if ((k === 'crash' || k === 'upg' || k === 'bj') && o && num(o.s) > 0) {
+        post({ g: k, w: o.w | 0, s: num(o.s), r: num(o.r) });
+      } else if (k === 'dc' && o && o.w === 1 && num(o.s) > 0) {
+        post({ g: 'dc', w: 1, s: num(o.s), r: num(o.r), o: String(window.smDcOpp || '').slice(0, 20) });
+      }
+    } catch (e) { }
+    return r;
+  };
+
+  /* ---------- интерфейс ---------- */
+  let cache = [];
+  function build() {
+    const ov = $('smOvGames'); if (!ov || $('gmFeed')) return;
+    const st = document.createElement('style');
+    st.textContent = '#gmFeed{flex-shrink:0;background:#0e1626;border:1px solid #17223a;border-radius:16px;padding:10px 12px}' +
+      '.gf-h{display:flex;justify-content:space-between;align-items:baseline;gap:8px;font-weight:800;color:#c9d3ea;font-size:14px;margin-bottom:6px}.gf-h small{font-weight:500;color:#6b7a9c;font-size:11px}' +
+      '.gf-r{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:6px 0;border-top:1px solid #14203a}.gf-r:first-of-type{border-top:0}' +
+      '.gf-l{min-width:0;flex:1}.gf-t{font-size:13px;color:#c9d3ea;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.gf-t b{color:#fff}.gf-b{font-size:11px;color:#6b7a9c;margin-top:1px}' +
+      '.gf-x{font-weight:800;font-size:14px;white-space:nowrap}.gf-x.w{color:#3ddc84}.gf-x.l{color:#ff6b81}.gf-x.d{color:#8b99b8}.gf-e{text-align:center;color:#6b7a9c;font-size:13px;padding:8px 0}';
+    document.head.appendChild(st);
+    const box = document.createElement('div'); box.id = 'gmFeed';
+    const h = document.createElement('div'); h.className = 'gf-h';
+    h.innerHTML = '<span>Лента игр</span><small>запись пропадает через 30 сек</small>';
+    const l = document.createElement('div'); l.id = 'gmFeedL';
+    box.append(h, l); ov.appendChild(box);
+    draw();
+  }
+  function row(v) {
+    const r = document.createElement('div'); r.className = 'gf-r';
+    const l = document.createElement('div'); l.className = 'gf-l';
+    const t = document.createElement('div'); t.className = 'gf-t';
+    const n = document.createElement('b'); n.textContent = String(v.n || 'Игрок').slice(0, 20);
+    t.appendChild(n);
+    t.appendChild(document.createTextNode(v.g === 'dc' ? ' выиграл у ' + String(v.o || 'соперника').slice(0, 20) + ' · Кубики' : ' · ' + NAMES[v.g]));
+    const b = document.createElement('div'); b.className = 'gf-b'; b.textContent = 'ставка ' + smFmt(v.s) + ' ₽';
+    l.append(t, b);
+    const x = document.createElement('div'); x.className = 'gf-x';
+    if (v.w === 1) { x.classList.add('w'); x.textContent = 'выиграл +' + smFmt(Math.max(0, v.r - v.s)) + ' ₽'; }
+    else if (v.w === 2) { x.classList.add('d'); x.textContent = 'ничья'; }
+    else { x.classList.add('l'); x.textContent = 'проиграл −' + smFmt(v.s) + ' ₽'; }
+    r.append(l, x); return r;
+  }
+  function draw() {
+    const l = $('gmFeedL'); if (!l) return;
+    const now = Date.now();
+    const a = cache.filter(v => now - v.t < LIFE).slice(0, 8);
+    l.textContent = '';
+    if (!a.length) { const e = document.createElement('div'); e.className = 'gf-e'; e.textContent = 'Пока тихо — сыграйте первым'; l.appendChild(e); return; }
+    a.forEach(v => l.appendChild(row(v)));
+  }
+
+  /* ---------- загрузка и очистка ---------- */
+  let busy = 0, lastClean = 0;
+  const ok = v => v && typeof v === 'object' && NAMES[v.g] && +v.t > 0 && num(v.s) > 0;
+  async function refresh() {
+    const o = $('smOvGames'); if (!o || !o.classList.contains('on') || busy) return;
+    busy = 1;
+    try {
+      const now = Date.now();
+      let r = await api('GET', 'feed', 'orderBy=%22t%22&startAt=' + (now - LIFE)), all = null;
+      if (!r.ok) { r = await api('GET', 'feed'); if (!r.ok) return; all = r.json || {}; }
+      const src = all || r.json || {};
+      cache = Object.keys(src).map(k => Object.assign({ id: k }, src[k])).filter(ok).sort((x, y) => y.t - x.t);
+      draw();
+      if (now - lastClean > 30000) {
+        lastClean = now;
+        let del = {};
+        if (all) Object.keys(all).forEach(k => { const v = all[k]; if (!v || !(+v.t > now - LIFE - 5000)) del[k] = null; });
+        else {
+          const old = await api('GET', 'feed', 'orderBy=%22t%22&endAt=' + (now - LIFE - 5000) + '&limitToFirst=100');
+          if (old.ok && old.json) Object.keys(old.json).forEach(k => { del[k] = null; });
+        }
+        if (Object.keys(del).length) api('PATCH', 'feed', '', del);
+      }
+    } finally { busy = 0; }
+  }
+
+  build();
+  setInterval(draw, 1000);
+  setInterval(refresh, 3000);
+  setTimeout(refresh, 500);
 })();
 </script>
 </body>
