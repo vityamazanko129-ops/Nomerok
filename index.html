@@ -2749,7 +2749,7 @@ button.upg-row{cursor:pointer}
   /* ---------- интерфейс ---------- */
   function build() {
     const pane = $('gmP_bj'); if (!pane || $('bjOn')) return;
-    try { GM_DESC.bj = 'Сделайте ставку и ждите соперника — или выберите чужую игру. Побеждает тот, у кого ближе к 21 (перебор проигрывает). Руку соперника видно после того, как оба закончат.'; $('gmDesc').textContent = gmCur === 'bj' ? GM_DESC.bj : $('gmDesc').textContent; } catch (e) { }
+    try { GM_DESC.bj = 'Сделайте ставку и ждите соперника — или выберите чужую игру. Побеждает тот, у кого ближе к 21 (перебор проигрывает). Карты и очки соперника видны сразу, как за настоящим столом.'; $('gmDesc').textContent = gmCur === 'bj' ? GM_DESC.bj : $('gmDesc').textContent; } catch (e) { }
     const st = document.createElement('style');
     st.textContent = '#gmP_bj>#bjTable,#gmP_bj>#bjMsg,#gmP_bj>#bjBet,#gmP_bj>#bjAct,#gmP_bj>.cr-note{display:none!important}' +
       '.bo-h{display:flex;align-items:center;gap:8px;background:#0e1626;border:1px solid #17223a;border-radius:14px;padding:10px;margin-top:6px}.bo-n{width:70px;font-weight:700;color:#c9d3ea;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.bo-c{flex:1;display:flex;flex-wrap:wrap;gap:4px}.bo-s{font-weight:800;color:#fff;min-width:28px;text-align:right}';
@@ -2781,8 +2781,8 @@ button.upg-row{cursor:pointer}
     $('boAmt').disabled = !!M;
     tb.textContent = '';
     if (play) {
-      const mv = bjVal(M.my), oh = M.oh || [], both = M.done && M.od2;
-      tb.append(hand('Вы', M.my, mv), hand(M.opp.n || 'Соперник', oh, both ? bjVal(oh) : '', !both));
+      const mv = bjVal(M.my), oh = M.oh || [];
+      tb.append(hand('Вы', M.my, mv), hand(M.opp.n || 'Соперник', oh, oh.length ? bjVal(oh) : '', false));
       info.textContent = wait ? '' : M.done ? (M.od2 ? 'Считаем…' : 'Ждём, пока соперник закончит…') : 'Ваш ход · ставка ' + smFmt(M.bet) + ' ₽';
     } else if (wait) info.textContent = 'Ждём соперника… ставка ' + smFmt(M.bet) + ' ₽';
     else if (M) info.textContent = 'Подключаемся…';
