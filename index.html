@@ -1579,8 +1579,8 @@ button.upg-row{cursor:pointer}
                 <div class="gm-tabs">
                     <button class="gm-t on" id="gmT_cr" onclick="gmTab('cr')"><b>Краш</b><small>забери до взрыва</small></button>
                     <button class="gm-t" id="gmT_up" onclick="gmTab('up')"><b>Апгрейдер</b><small>номера → дороже</small></button>
-                    <button class="gm-t" id="gmT_bj" onclick="gmTab('bj')"><b>Блэкджек</b><small>против дилера</small></button>
-                    <button class="gm-t" id="gmT_dc" onclick="gmTab('dc')"><b>Кубики</b><small>1 на 1 онлайн</small></button>
+                    <button class="gm-t" id="gmT_bj" onclick="gmTab('bj')"><b>Блэкджек</b><small>против игроков</small></button>
+                    <button class="gm-t" id="gmT_dc" onclick="gmTab('dc')"><b>Кубики</b><small>против игроков</small></button>
                 </div>
                 <div class="gm-desc" id="gmDesc"></div>
                 <!-- краш -->
@@ -2571,11 +2571,14 @@ button.upg-row{cursor:pointer}
     a.forEach(v => l.appendChild(row(v)));
   }
 
-  /* ---------- загрузка и очистка ---------- */
-  let busy = 0, lastClean = 0;
+  /* ---------- загрузка, поток (SSE) и очистка ---------- */
+  let busy = 0, lastClean = 0, es = null, live = 0, store = {}, esTimer = 0, starting = 0, esT0 = 0;
   const ok = v => v && typeof v === 'object' && NAMES[v.g] && +v.t > 0 && num(v.s) > 0;
+  const visible = () => { const o = $('smOvGames'); return !!o && o.classList.contains('on'); };
+
+  /* запасной вариант: обычный опрос раз в 3 сек, если поток не подключился */
   async function refresh() {
-    const o = $('smOvGames'); if (!o || !o.classList.contains('on') || busy) return;
+    if (live || busy || !visible()) return;
     busy = 1;
     try {
       const now = Date.now();
@@ -2597,10 +2600,286 @@ button.upg-row{cursor:pointer}
     } finally { busy = 0; }
   }
 
+  function rebuild() {
+    cache = Object.keys(store).map(k => Object.assign({ id: k }, store[k])).filter(ok).sort((x, y) => y.t - x.t);
+    draw();
+  }
+  function cleanup() {
+    const now = Date.now(); if (now - lastClean < 30000) return; lastClean = now;
+    const del = {};
+    Object.keys(store).forEach(k => { const v = store[k]; if (!v || !(+v.t > now - LIFE - 5000)) del[k] = null; });
+    const ks = Object.keys(del);
+    if (ks.length) { api('PATCH', 'feed', '', del); ks.forEach(k => { delete store[k]; }); }
+  }
+  function onData(ev, merge) {
+    let m; try { m = JSON.parse(ev.data); } catch (e) { return; }
+    if (!m) return;
+    const parts = String(m.path || '/').split('/').filter(Boolean), d = m.data;
+    if (!parts.length) {
+      if (merge) { if (d && typeof d === 'object') Object.keys(d).forEach(k => { if (d[k] === null) delete store[k]; else store[k] = d[k]; }); }
+      else store = (d && typeof d === 'object') ? Object.assign({}, d) : {};
+    } else if (parts.length === 1) {
+      const k = parts[0];
+      if (d === null) delete store[k];
+      else if (merge && store[k] && typeof d === 'object') Object.assign(store[k], d);
+      else store[k] = d;
+    } else return;
+    live = 1; rebuild(); cleanup();
+  }
+  function stopStream() { if (es) { try { es.close(); } catch (e) { } es = null; } live = 0; }
+  async function startStream() {
+    if (es || esTimer || starting) return;
+    starting = 1;
+    let t = '';
+    try { t = await window.smFbAuth(); } catch (e) { }
+    starting = 0;
+    if (!t || es || !visible()) return;
+    let cur;
+    try { cur = es = new EventSource(CFG.url + '/feed.json?auth=' + encodeURIComponent(t)); } catch (e) { es = null; return; }
+    esT0 = Date.now(); store = {};
+    cur.addEventListener('put', e => onData(e, 0));
+    cur.addEventListener('patch', e => onData(e, 1));
+    cur.addEventListener('auth_revoked', () => { if (es === cur) stopStream(); });
+    cur.onerror = () => {
+      if (es !== cur) return;
+      stopStream();
+      esTimer = setTimeout(() => { esTimer = 0; }, 3000);
+    };
+  }
+
   build();
-  setInterval(draw, 1000);
+  setInterval(() => {
+    draw();
+    if (visible()) {
+      if (es && Date.now() - esT0 > 45 * 60000) stopStream();
+      if (!es) startStream();
+    } else if (es) stopStream();
+  }, 1000);
   setInterval(refresh, 3000);
   setTimeout(refresh, 500);
+})();
+</script>
+<script>
+/* === Краш в реальном времени: один общий раунд для всех игроков ===
+   Раунды идут подряд от общей точки отсчёта, точка взрыва зависит только от номера раунда,
+   время сверяется с часами Firebase — поэтому у всех множитель и взрыв совпадают. */
+(function () {
+  'use strict';
+  try { if (typeof crTick !== 'function' || typeof CR_RATE === 'undefined' || !window.smFbAuth) return; } catch (e) { return; }
+  const E = 1790000000000;
+  let off = 0, n = 0, s = E, rn = -1;
+  const rnd = k => {
+    let a = (Math.imul(k, 2654435761) + 0x9E3779B9) >>> 0;
+    a = Math.imul(a ^ (a >>> 15), a | 1);
+    a ^= a + Math.imul(a ^ (a >>> 7), a | 61);
+    return ((a ^ (a >>> 14)) >>> 0) / 4294967296;
+  };
+  const ptOf = k => Math.min(CR_MAXPT, Math.max(1, Math.floor(100 * CR_EDGE / (1 - rnd(k))) / 100));
+  const tcOf = p => p <= 1 ? 0 : Math.log(p) / CR_RATE;
+  const dur = k => Math.round(CR_WAIT + tcOf(ptOf(k)) + CR_PAUSE);
+
+  async function sync() {
+    try {
+      const t = await window.smFbAuth(), a = Date.now();
+      const r = await fetch(window.smFbCfg.url + '/feed/clk.json?auth=' + encodeURIComponent(t), { method: 'PUT', body: '{".sv":"timestamp"}' });
+      const v = await r.json(), b = Date.now();
+      if (r.ok && +v > 1e12) { off = v - (a + b) / 2; rn = -1; }
+    } catch (e) { }
+  }
+
+  window.crWait = function () { rn = -1; };
+  window.crTick = function () {
+    const now = Date.now(), T = now + off;
+    if (T < s) { n = 0; s = E; }
+    while (s + dur(n) <= T) { s += dur(n); n++; }
+    const l0 = s - off;
+    if (n !== rn) {
+      if (cr.ph === 'run') crBoom(l0);
+      rn = n; cr.pt = ptOf(n); cr.tc = tcOf(cr.pt); cr.ph = 'wait'; cr.t0 = l0;
+      cr.cashed = 0; cr.win = 0; cr.bet = cr.nb; cr.nb = 0; cr.m = 1;
+    }
+    if (cr.ph === 'wait' && now >= cr.t0 + CR_WAIT) { cr.ph = 'run'; cr.ts = cr.t0 + CR_WAIT; cr.m = 1; }
+    if (cr.ph === 'run') {
+      const t = now - cr.ts;
+      if (cr.bet && !cr.cashed && cr.auto >= 1.01 && cr.auto <= cr.pt && t >= Math.log(cr.auto) / CR_RATE) crCash(cr.auto);
+      if (t >= cr.tc) crBoom(cr.ts + cr.tc); else cr.m = crMulAt(t);
+    }
+    if (!crUiOn() && !crBusy()) { crStop(); return; }
+    crRender();
+  };
+  sync();
+  setInterval(sync, 300000);
+})();
+</script>
+<script>
+/* === Блэкджек онлайн (1 на 1) через Firebase ===
+   bj/open/{rid} — лобби, bj/rooms/{rid}: m — хозяин, g — гость, p/{uid} — рука {h, d}, x — отмена/победа по таймауту. */
+(function () {
+  'use strict';
+  try { if (typeof bjVal !== 'function' || typeof smBal === 'undefined' || !window.smFbAuth) return; } catch (e) { return; }
+  const CFG = window.smFbCfg, KEY = 'smBjOn', $ = id => document.getElementById(id);
+  const toast = t => { try { showToast(t); } catch (e) { } };
+  const ri = n => { const a = new Uint32Array(1); try { crypto.getRandomValues(a); } catch (e) { a[0] = Math.random() * 4294967296; } return a[0] % n; };
+  const draw = () => ({ r: BJ_RANKS[ri(13)], s: BJ_SUITS[ri(4)] });
+  const enc = h => h.map(c => c.r + c.s).join(',');
+  const dec = t => { try { const a = String(t || '').split(',').map(x => ({ r: x.slice(0, -1), s: x.slice(-1) })); return a.length && a.length < 12 && a.every(c => BJ_RANKS.includes(c.r) && BJ_SUITS.includes(c.s)) ? a : []; } catch (e) { return []; } };
+  const nameOf = () => { try { return String(smName() || 'Игрок').slice(0, 20); } catch (e) { return 'Игрок'; } };
+  let ME = '', M = null, L = null, timer = 0, busy = 0;
+  async function who() { await window.smFbAuth(); ME = window.smFbUid(); return ME; }
+  async function api(m, p, b, h) {
+    try {
+      const t = await window.smFbAuth();
+      const r = await fetch(CFG.url + '/' + p + '.json?auth=' + encodeURIComponent(t), { method: m, headers: h || undefined, body: b === undefined ? undefined : JSON.stringify(b) });
+      let j = null; try { j = await r.json(); } catch (e) { }
+      return { ok: r.ok, s: r.status, json: j, etag: r.headers.get('ETag') };
+    } catch (e) { return { ok: false, s: 0, json: null, etag: null }; }
+  }
+  async function putOnce(path, body) {
+    let g = await api('GET', path, undefined, { 'X-Firebase-ETag': 'true' });
+    if (g.s === 0) g = await api('GET', path);
+    if (!g.ok || g.json) return false;
+    const h = g.etag ? { 'if-match': g.etag } : undefined;
+    let p = await api('PUT', path, body, h);
+    if (p.s === 0 && h) p = await api('PUT', path, body);
+    return p.ok;
+  }
+  const sv = () => { try { if (M) localStorage.setItem(KEY, JSON.stringify({ rid: M.rid, role: M.role, bet: M.bet, t0: M.t0, opp: M.opp, my: M.my, done: M.done, t1: M.t1, dn: M.dn })); else localStorage.removeItem(KEY); } catch (e) { } };
+  try { const o = JSON.parse(localStorage.getItem(KEY) || 'null'); if (o && o.rid && o.bet > 0) { M = o; M.my = Array.isArray(o.my) ? o.my : []; } } catch (e) { }
+
+  /* ---------- интерфейс ---------- */
+  function build() {
+    const pane = $('gmP_bj'); if (!pane || $('bjOn')) return;
+    try { GM_DESC.bj = 'Сделайте ставку и ждите соперника — или выберите чужую игру. Побеждает тот, у кого ближе к 21 (перебор проигрывает). Руку соперника видно после того, как оба закончат.'; $('gmDesc').textContent = gmCur === 'bj' ? GM_DESC.bj : $('gmDesc').textContent; } catch (e) { }
+    const st = document.createElement('style');
+    st.textContent = '#gmP_bj>#bjTable,#gmP_bj>#bjMsg,#gmP_bj>#bjBet,#gmP_bj>#bjAct,#gmP_bj>.cr-note{display:none!important}' +
+      '.bo-h{display:flex;align-items:center;gap:8px;background:#0e1626;border:1px solid #17223a;border-radius:14px;padding:10px;margin-top:6px}.bo-n{width:70px;font-weight:700;color:#c9d3ea;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.bo-c{flex:1;display:flex;flex-wrap:wrap;gap:4px}.bo-s{font-weight:800;color:#fff;min-width:28px;text-align:right}';
+    document.head.appendChild(st);
+    const on = document.createElement('div'); on.id = 'bjOn';
+    on.innerHTML = '<div class="dc-oi" id="boInfo"></div><div id="boTb"></div>' +
+      '<div id="boMk"><div class="cr-l">Ставка, ₽</div><div class="cr-in"><input id="boAmt" inputmode="numeric" autocomplete="off" value="100" oninput="gmAmtIn(\'boAmt\')"><button onclick="gmAmtSet(\'boAmt\',.5)">½</button><button onclick="gmAmtSet(\'boAmt\',2)">×2</button><button onclick="gmAmtSet(\'boAmt\',\'max\')">Макс</button></div><button class="rw-btn cr-go go" id="boGo">Поставить и ждать соперника</button></div>' +
+      '<div class="bj-act" id="boAct" style="display:none"><button class="rw-btn" id="boHit">Взять</button><button class="rw-btn" id="boStand">Хватит</button></div>' +
+      '<button class="sm-btn dc-oc" id="boCancel" style="display:none">Отменить</button><div class="cr-l" id="boLt" style="margin-top:12px">Выберите соперника</div><div id="boList"></div>';
+    pane.insertBefore(on, pane.firstChild);
+    $('boGo').onclick = create; $('boHit').onclick = hit; $('boStand').onclick = stand;
+    $('boCancel').onclick = async () => { if (!M || M.opp) return; await who(); await writeX('cancel', ME); api('DELETE', 'bj/open/' + M.rid); tick(); };
+    render();
+  }
+  function hand(n, c, v, hide) {
+    const r = document.createElement('div'); r.className = 'bo-h';
+    const a = document.createElement('span'); a.className = 'bo-n'; a.textContent = n;
+    const b = document.createElement('span'); b.className = 'bo-c';
+    b.innerHTML = hide ? c.map(() => '<span class="bjc">?</span>').join('') : c.map(bjCard).join('');
+    const d = document.createElement('span'); d.className = 'bo-s'; d.textContent = v;
+    r.append(a, b, d); return r;
+  }
+  function render() {
+    const info = $('boInfo'); if (!info) return;
+    const play = !!(M && M.opp && M.my.length), wait = !!(M && !M.opp), tb = $('boTb');
+    $('boMk').style.display = M ? 'none' : ''; $('boList').style.display = $('boLt').style.display = M ? 'none' : '';
+    $('boCancel').style.display = wait ? 'block' : 'none';
+    $('boAct').style.display = play && !M.done ? 'flex' : 'none';
+    $('boAmt').disabled = !!M;
+    tb.textContent = '';
+    if (play) {
+      const mv = bjVal(M.my), oh = M.oh || [], both = M.done && M.od2;
+      tb.append(hand('Вы', M.my, mv), hand(M.opp.n || 'Соперник', oh, both ? bjVal(oh) : '', !both));
+      info.textContent = wait ? '' : M.done ? (M.od2 ? 'Считаем…' : 'Ждём, пока соперник закончит…') : 'Ваш ход · ставка ' + smFmt(M.bet) + ' ₽';
+    } else if (wait) info.textContent = 'Ждём соперника… ставка ' + smFmt(M.bet) + ' ₽';
+    else if (M) info.textContent = 'Подключаемся…';
+    else if (L) { tb.append(hand('Вы', L.my, bjVal(L.my)), hand(L.on, L.oh, L.oh.length ? bjVal(L.oh) : '')); info.textContent = L.msg; }
+    else info.textContent = '';
+  }
+  function drawList(a) {
+    const ls = $('boList'); if (!ls) return; ls.textContent = '';
+    if (!a.length) { const e = document.createElement('div'); e.className = 'dc-em'; e.textContent = 'Пока никто не ждёт соперника — сделайте ставку первым'; ls.appendChild(e); return; }
+    a.forEach(v => {
+      const r = document.createElement('div'); r.className = 'dc-room';
+      const n = document.createElement('span'); n.className = 'dc-rn'; n.textContent = String(v.n || 'Игрок').slice(0, 20);
+      const b = document.createElement('span'); b.className = 'dc-rb'; b.textContent = smFmt(v.b) + ' ₽';
+      const j = document.createElement('button'); j.className = 'dc-rj'; j.textContent = 'Играть'; j.disabled = smBal < v.b; j.onclick = () => join(v);
+      r.append(n, b, j); ls.appendChild(r);
+    });
+  }
+  async function lobby() {
+    if (M) return;
+    const o = $('smOvGames'); if (!o || !o.classList.contains('on') || gmCur !== 'bj') return;
+    const r = await api('GET', 'bj/open'); if (!r.ok || M) return;
+    const me = await who(), now = Date.now();
+    drawList(Object.keys(r.json || {}).map(k => Object.assign({ id: k }, r.json[k])).filter(v => v && v.b > 0 && v.h !== me && now - (+v.t || 0) < 60000).sort((x, y) => y.t - x.t).slice(0, 20));
+  }
+
+  /* ---------- создание / вход ---------- */
+  async function create() {
+    if (M) return;
+    const a = gmRub($('boAmt').value);
+    if (a < BJ_MIN) { toast('Минимальная ставка — ' + BJ_MIN + ' ₽'); return; }
+    if (a > smBal) { toast('Не хватает ₽'); return; }
+    const me = await who(), rid = Array.from({ length: 6 }, () => ri(256).toString(16).padStart(2, '0')).join(''), nm = nameOf();
+    gmSpend(a); L = null;
+    M = { rid, role: 'h', bet: a, t0: Date.now(), opp: null, my: [], done: 0 }; sv(); render();
+    const r1 = await api('PUT', 'bj/rooms/' + rid + '/m', { h: me, n: nm, b: a, t: Date.now() });
+    const r2 = r1.ok && await api('PUT', 'bj/open/' + rid, { h: me, n: nm, b: a, t: Date.now() });
+    if (!r1.ok || !r2.ok) { const bad = !r1.ok ? r1 : r2; M = null; sv(); gmPay(a); toast('Не удалось создать игру: ' + (bad.s ? 'ошибка ' + bad.s : 'нет связи с базой')); render(); return; }
+    startLoop();
+  }
+  async function join(v) {
+    if (M) return;
+    if (smBal < v.b) { toast('Не хватает ₽'); return; }
+    const me = await who(), nm = nameOf(); gmSpend(v.b); L = null;
+    M = { rid: v.id, role: 'g', bet: v.b, t0: Date.now(), opp: { u: v.h, n: String(v.n || 'Игрок').slice(0, 20) }, my: [], done: 0 }; sv(); render();
+    let ok = await putOnce('bj/rooms/' + v.id + '/g', { u: me, n: nm });
+    if (ok) { await new Promise(r => setTimeout(r, 400)); const g = await api('GET', 'bj/rooms/' + v.id + '/g'); ok = g.ok && g.json && g.json.u === me; }
+    if (!ok) { const b = M.bet; M = null; sv(); gmPay(b); toast('Игра уже занята'); render(); lobby(); return; }
+    api('DELETE', 'bj/open/' + v.id); startLoop();
+  }
+
+  /* ---------- ход игры ---------- */
+  const pub = () => api('PUT', 'bj/rooms/' + M.rid + '/p/' + ME, { h: enc(M.my), d: M.done ? 1 : 0 }).then(r => r.ok);
+  function hit() { if (!M || !M.my.length || M.done) return; M.my.push(draw()); if (bjVal(M.my) > 21) { M.done = 1; M.dn = Date.now(); } M.dirty = 1; sv(); render(); tick(); }
+  function stand() { if (!M || !M.my.length || M.done) return; M.done = 1; M.dn = Date.now(); M.dirty = 1; sv(); render(); tick(); }
+  async function writeX(k, w) { if (M) await putOnce('bj/rooms/' + M.rid + '/x', { k, w: w || '', u: ME }); }
+  function end(kind) {
+    const b = M.bet, my = M.my, oh = M.oh || [], on = (M.opp && M.opp.n) || 'Соперник', prize = Math.floor(b * 2 * (1 - DC_FEE));
+    M = null; sv(); let msg;
+    if (kind === 'win') { gmPay(prize); smLog('bj', { w: 1, s: b, r: prize }); try { snWin(); } catch (e) { } msg = 'Вы выиграли! +' + smFmt(prize) + ' ₽'; }
+    else if (kind === 'tie' || kind === 'cancel') { gmPay(b); if (kind === 'tie') smLog('bj', { w: 2, s: b, r: b }); msg = kind === 'tie' ? 'Ничья — ставка возвращена' : 'Игра отменена, ставка возвращена'; }
+    else { smLog('bj', { w: 0, s: b, r: 0 }); msg = 'Вы проиграли: −' + smFmt(b) + ' ₽'; }
+    L = kind === 'cancel' ? null : { my, oh, on, msg }; if (kind === 'cancel') toast(msg);
+    render(); lobby();
+  }
+  async function tick() {
+    if (!M) { clearInterval(timer); timer = 0; return; }
+    if (busy) return; busy = 1;
+    try {
+      const me = await who(), r = await api('GET', 'bj/rooms/' + M.rid); if (!r.ok || !M) return;
+      const R = r.json || {}, now = Date.now();
+      if (R.x) { end(R.x.k === 'cancel' ? 'cancel' : R.x.w === me ? 'win' : 'lose'); return; }
+      if (M.role === 'h' && !R.g) {
+        if (now - M.t0 > 120000) { await writeX('cancel', me); api('DELETE', 'bj/open/' + M.rid); return; }
+        if (!M.hb || now - M.hb > 15000) { M.hb = now; api('PATCH', 'bj/open/' + M.rid, { t: now }); }
+        return;
+      }
+      if (M.role === 'g' && (!R.g || R.g.u !== me || !R.m)) { if (now - M.t0 > 15000) { end('cancel'); } return; }
+      if (M.role === 'h' && !M.opp) { M.opp = { u: R.g.u, n: String(R.g.n || 'Игрок').slice(0, 20) }; sv(); }
+      if (M.role === 'h' && !M.od) { M.od = 1; api('DELETE', 'bj/open/' + M.rid); }
+      if (!M.my.length) { M.my = [draw(), draw()]; M.t1 = now; if (bjVal(M.my) === 21) { M.done = 1; M.dn = now; } M.dirty = 1; sv(); }
+      if (M.dirty && await pub()) M.dirty = 0;
+      const oi = (R.p || {})[M.opp.u] || {}; M.oh = dec(oi.h); M.od2 = oi.d ? 1 : 0;
+      render();
+      if (M.done && M.od2 && !M.dirty) {
+        const sc = h => { const v = bjVal(h); return !h.length || v > 21 ? -1 : v; }, a = sc(M.my), b = sc(M.oh);
+        await new Promise(r => setTimeout(r, 1200)); if (!M) return;
+        end(a === b ? 'tie' : a > b ? 'win' : 'lose');
+      } else if (M.done && now - (M.dn || now) > 90000) await writeX('win', me);
+    } catch (e) { } finally { busy = 0; }
+  }
+  function startLoop() { if (!timer) timer = setInterval(tick, 1000); tick(); }
+
+  try {
+    const _gt = window.gmTab;
+    window.gmTab = function (id) { const r = _gt.apply(this, arguments); if (id === 'bj') setTimeout(lobby, 50); return r; };
+  } catch (e) { }
+  build(); setInterval(lobby, 2500); if (M) startLoop();
 })();
 </script>
 </body>
