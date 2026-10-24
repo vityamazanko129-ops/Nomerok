@@ -3109,16 +3109,36 @@ button.upg-row{cursor:pointer}
   });   /* разовый бонус 500 000 конфет */
   function save(){try{localStorage.setItem(SK,JSON.stringify(S));}catch(e){}}
 
-  /* ===== прогресс заданий (от момента старта события) ===== */
+  /* ===== прогресс заданий (с момента последнего обновления) ===== */
   function cur(){
     var st=safe(function(){return smStat;},{})||{};
     var rc=Array.isArray(st.rc)?st.rc:[];
     function ge(r){return rc.slice(r).reduce(function(a,b){return a+(b||0);},0);}
     return {g:st.g||0,s:st.s||0,sm:st.sm||0,lv:safe(function(){return smLv;},1),r2:ge(2),r3:ge(3),r4:ge(4),r5:ge(5)};
   }
+  /* Задания обновляются раз в 6 часов, включая время вне игры.
+     Время следующего обновления сохраняется для каждого браузера отдельно. */
+  var TASK_RESET_MS=6*60*60*1000;
+  function resetDailyTasks(){
+    var now=Date.now();
+    if(!Number.isFinite(S.taskResetAt)||S.taskResetAt<=0){
+      S.taskResetAt=now+TASK_RESET_MS;
+      if(!S.base) S.base=cur();
+      save();
+      return false;
+    }
+    if(now<S.taskResetAt) return false;
+    var cycles=Math.floor((now-S.taskResetAt)/TASK_RESET_MS)+1;
+    S.taskResetAt+=cycles*TASK_RESET_MS;
+    S.base=cur();
+    S.claimed={};
+    save();
+    return true;
+  }
   if(!S.base){S.base=cur();save();}
-  function prog(k){var c=cur();if(c[k]<S.base[k]){S.base[k]=c[k];save();}return c[k]-S.base[k];}
-  function claimable(){return TASKS.filter(function(t){return !S.claimed[t.id]&&prog(t.k)>=t.t;}).length;}
+  resetDailyTasks();
+  function prog(k){resetDailyTasks();var c=cur();if(c[k]<S.base[k]){S.base[k]=c[k];save();}return c[k]-S.base[k];}
+  function claimable(){resetDailyTasks();return TASKS.filter(function(t){return !S.claimed[t.id]&&prog(t.k)>=t.t;}).length;}
   function readyPk(){var n=0,now=Date.now();for(var i=0;i<PK_N;i++)if(now>=S.pk[i])n++;return n;}
 
   /* ===== подарок раз в день ===== */
@@ -3311,7 +3331,7 @@ button.upg-row{cursor:pointer}
     $('hwTabs').innerHTML='<div class="st-seg"><button data-tab="0" class="'+(tab===0?'on':'')+'">Задания'+(n?' ('+n+')':'')+'</button><button data-tab="1" class="'+(tab===1?'on':'')+'">Фоны</button><button data-tab="2" class="'+(tab===2?'on':'')+'">SIM</button></div>';
   }
   function tasksHtml(){
-    return TASKS.map(function(t){
+    return '<div class="hwo-box" style="text-align:center;margin-bottom:12px"><b>⏳ Задания обновятся через <span id="hwTaskCountdown">'+tm(S.taskResetAt-Date.now())+'</span></b><small style="display:block;margin-top:5px">Каждые 6 часов, даже если игра закрыта</small></div>'+TASKS.map(function(t){
       var p=prog(t.k),done=p>=t.t,cl=S.claimed[t.id],pc=Math.min(100,Math.floor(p/t.t*100));
       var right=cl?'<span>✓</span><button class="hwo-btn" disabled>Получено</button>':
         done?'<span>🍬 '+t.r+'</span><button class="hwo-btn" data-t="'+t.id+'">Забрать</button>':'<span>🍬 '+t.r+'</span>';
@@ -3373,6 +3393,7 @@ button.upg-row{cursor:pointer}
     if(!ov.classList.contains('on')) return;
     $('hwSub').textContent='До конца события: '+left();
     var els=ov.querySelectorAll('[data-tm]'),now=Date.now();
+    var taskCountdown=$('hwTaskCountdown');if(taskCountdown)taskCountdown.textContent=tm(S.taskResetAt-now);
     for(var i=0;i<els.length;i++){els[i].textContent=tm(S.pk[+els[i].getAttribute('data-tm')]-now);}
     if(now>hold&&sigP()!==sg.p){renderPump();sg.p=sigP();}
     var st=sigT(); if(st!==sg.t&&now>hold){renderHead();renderTabs();renderTab();sg.t=st;}
@@ -3392,6 +3413,7 @@ button.upg-row{cursor:pointer}
   }
   var cbusy={};
   function claim(id){
+    resetDailyTasks();
     var t=TASKS.filter(function(x){return x.id===id;})[0];
     if(!t||cbusy[id]||S.claimed[id]||ended()||prog(t.k)<t.t) return;
     cbusy[id]=1; S.claimed[id]=1;
@@ -3446,7 +3468,7 @@ button.upg-row{cursor:pointer}
     ban.style.display=ended()?'none':'';
   }
   ban.onclick=function(){ if(ended()) return; renderAll(); smOpen('hwOv'); };
-  save(); badge(); setInterval(badge,2000); setInterval(tick,1000);
+  save(); badge(); setInterval(badge,2000); setInterval(tick,1000); setInterval(function(){if(resetDailyTasks()){try{renderAll();}catch(e){} badge();}},1000);
 })();
 </script>
 
