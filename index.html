@@ -3885,6 +3885,7 @@ document.addEventListener('keydown',e=>{if(e.key==='Escape'&&carE('smOvCars')?.c
   var END=new Date(2026,9,31,23,59,59).getTime();   /* конец события */
   var GIFT=5000, GIFT_C=25;                          /* ежедневный подарок: ₽ и конфеты */
   var PK_CD=90*60000, PK_N=3;                        /* тыквы: перезарядка и количество */
+  var TASK_CD=6*3600000;                             /* задания события обновляются каждые 6 часов */
   var TASKS=[
     {id:'g500', i:'📱',n:'Тираж ужаса',d:'Выпустить 500 SIM',k:'g',t:500,r:60},
     {id:'s300', i:'💰',n:'Торговец тенями',d:'Продать 300 SIM',k:'s',t:300,r:70},
@@ -3926,7 +3927,16 @@ document.addEventListener('keydown',e=>{if(e.key==='Escape'&&carE('smOvCars')?.c
   }
   if(!S.base){S.base=cur();save();}
   function prog(k){var c=cur();if(c[k]<S.base[k]){S.base[k]=c[k];save();}return c[k]-S.base[k];}
-  function claimable(){return TASKS.filter(function(t){return !S.claimed[t.id]&&prog(t.k)>=t.t;}).length;}
+  /* ===== задания обновляются каждые 6 часов ===== */
+  function rollTasks(){
+    var now=Date.now();
+    if(S.tEnd>now && S.tEnd-now<=TASK_CD+6e4) return false;   /* цикл ещё идёт */
+    var first=!S.tEnd;                                         /* первый запуск: текущий прогресс не трогаем */
+    if(!first){S.base=cur();S.claimed={};}                     /* новый цикл: прогресс с нуля, награды снова доступны */
+    S.tEnd=now+TASK_CD; save();
+    return true;
+  }
+  function claimable(){rollTasks();return TASKS.filter(function(t){return !S.claimed[t.id]&&prog(t.k)>=t.t;}).length;}
   function readyPk(){var n=0,now=Date.now();for(var i=0;i<PK_N;i++)if(now>=S.pk[i])n++;return n;}
 
   /* ===== подарок раз в день ===== */
@@ -4119,7 +4129,8 @@ document.addEventListener('keydown',e=>{if(e.key==='Escape'&&carE('smOvCars')?.c
     $('hwTabs').innerHTML='<div class="st-seg"><button data-tab="0" class="'+(tab===0?'on':'')+'">Задания'+(n?' ('+n+')':'')+'</button><button data-tab="1" class="'+(tab===1?'on':'')+'">Фоны</button><button data-tab="2" class="'+(tab===2?'on':'')+'">SIM</button></div>';
   }
   function tasksHtml(){
-    return TASKS.map(function(t){
+    rollTasks();
+    return '<div class="hwo-sub" style="margin:0 0 8px">⏳ Задания обновятся через <b data-tt="1">'+tm(S.tEnd-Date.now())+'</b></div>'+TASKS.map(function(t){
       var p=prog(t.k),done=p>=t.t,cl=S.claimed[t.id],pc=Math.min(100,Math.floor(p/t.t*100));
       var right=cl?'<span>✓</span><button class="hwo-btn" disabled>Получено</button>':
         done?'<span>🍬 '+t.r+'</span><button class="hwo-btn" data-t="'+t.id+'">Забрать</button>':'<span>🍬 '+t.r+'</span>';
@@ -4180,7 +4191,9 @@ document.addEventListener('keydown',e=>{if(e.key==='Escape'&&carE('smOvCars')?.c
   function tick(){
     if(!ov.classList.contains('on')) return;
     $('hwSub').textContent='До конца события: '+left();
+    rollTasks();
     var els=ov.querySelectorAll('[data-tm]'),now=Date.now();
+    var tt=ov.querySelectorAll('[data-tt]');for(var j=0;j<tt.length;j++){tt[j].textContent=tm(S.tEnd-now);}
     for(var i=0;i<els.length;i++){els[i].textContent=tm(S.pk[+els[i].getAttribute('data-tm')]-now);}
     if(now>hold&&sigP()!==sg.p){renderPump();sg.p=sigP();}
     var st=sigT(); if(st!==sg.t&&now>hold){renderHead();renderTabs();renderTab();sg.t=st;}
@@ -4200,6 +4213,7 @@ document.addEventListener('keydown',e=>{if(e.key==='Escape'&&carE('smOvCars')?.c
   }
   var cbusy={};
   function claim(id){
+    rollTasks();
     var t=TASKS.filter(function(x){return x.id===id;})[0];
     if(!t||cbusy[id]||S.claimed[id]||ended()||prog(t.k)<t.t) return;
     cbusy[id]=1; S.claimed[id]=1;
